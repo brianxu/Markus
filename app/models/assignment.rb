@@ -6,8 +6,7 @@ class Assignment < ActiveRecord::Base
     :rubric => 'rubric'
   }
 
-  has_many :rubric_criteria, :class_name => "RubricCriterion", :order => :position
-  has_many :flexible_criteria, :class_name => "FlexibleCriterion", :order => :position
+  has_many :criteria, :class_name => "Criterion", :order => :position
   has_many :assignment_files
   has_many :test_files
   has_many :criterion_ta_associations
@@ -158,12 +157,8 @@ class Assignment < ActiveRecord::Base
 
   def total_mark
     total = 0
-    if self.marking_scheme_type == 'rubric'
-      rubric_criteria.each do |criterion|
-        total = total + criterion.weight * 4
-      end
-    else
-      total = flexible_criteria.sum('max')
+    self.criteria.each do |criterion|
+      total += criterion.full_mark
     end
     return total
   end
@@ -199,7 +194,7 @@ class Assignment < ActiveRecord::Base
 
   def total_criteria_weight
     factor = 10.0 ** 2
-    return (rubric_criteria.sum('weight') * factor).floor / factor
+    return (self.criteria.sum('weight') * factor).floor / factor
   end
 
   def add_group(new_group_name=nil)
@@ -452,7 +447,7 @@ class Assignment < ActiveRecord::Base
   def get_detailed_csv_report
     out_of = self.total_mark
     students = Student.all
-    rubric_criteria = self.rubric_criteria
+    rubric_criteria = self.criteria
     csv_string = FasterCSV.generate do |csv|
       students.each do |student|
         final_result = []
@@ -503,24 +498,19 @@ class Assignment < ActiveRecord::Base
   end
 
   def next_criterion_position
-    return self.rubric_criteria.size + 1
+    return self.criteria.size + 1
   end
 
   def get_criteria
-    if self.marking_scheme_type == 'rubric'
-       return self.rubric_criteria
-    else
-       return self.flexible_criteria
-    end
+    return self.criteria
   end
 
   def criteria_count
-    if self.marking_scheme_type == 'rubric'
-       return self.rubric_criteria.size
-    else
-       return self.flexible_criteria.size
-    end
+    return self.criteria.size
   end
+
+  #updated for new criterion design
+
 
   private
 
@@ -545,5 +535,48 @@ class Assignment < ActiveRecord::Base
   def reset_collection_time
     submission_rule.reset_collection_time
   end
-
+  
+  def create_or_update_from_csv
+    nb_updates = 0
+    FasterCSV.parse(file.read) do |row|
+      next if FasterCSV.generate_line(row).strip.empty?
+      begin
+        Criterion.create_or_update_from_csv_row(row)
+        nb_updates += 1
+      rescue RuntimeError => e
+        invalid_lines << row.join(',') + ": " + e.message unless invalid_lines.nil?
+      end
+    end
+    return nb_updates
+  end
+  
+  def read_csv_for_download
+    csv_string = FasterCSV.generate do |csv|
+      self.criteria.each do |criterion|
+        criterion_array = criterion.read_csv_row_for_download
+        csv << criterion_array  
+      end
+    end
+    return csv_string
+  end
+  
+  def assign_tas_to_criteria_by_csv(csv_file_contents)
+    failures = []
+    FasterCSV.parse(csv_file_contents) do |row|
+      criterion_name = row. # Knocks the first item from array
+      criterion = Criterion.find_by_assignment_id_and_flexible_criterion_name(assignment_id, criterion_name)
+      if criterion.nil?
+        failures.push(criterion_name)
+      else
+        criterion.add_tas_by_usershift_name_array(row) # The rest of the array
+      end
+    end
+    return failures
+  end
+  
+  def next_criterion_position
+    last_criterion = Criterion.find_last_by_assignment_id(assignment.id, :order => :position)
+    return last_criterion.position + 1 unless last_criterion.nil?
+    return 1
+  end
 end
